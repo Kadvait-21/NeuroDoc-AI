@@ -1,5 +1,5 @@
 Flask
-pinecone-client
+pinecone
 sentence-transformers
 google-generativeai
 uuid
