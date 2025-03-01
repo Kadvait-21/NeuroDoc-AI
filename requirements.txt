@@ -1,0 +1,5 @@
+Flask
+pinecone-client
+sentence-transformers
+google-generativeai
+uuid
