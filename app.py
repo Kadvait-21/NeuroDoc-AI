@@ -1,12 +1,12 @@
-from flask import Flask, request, jsonify
+import streamlit as st
 import pinecone
 from pinecone import ServerlessSpec
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 import uuid
 import os
-app = Flask(__name__)
 
+# --- Setup ---
 pinecone_api_key = os.getenv("PINECONE_API_KEY")
 gemini_api_key = os.getenv("GEMINI_API_KEY")
 
@@ -15,6 +15,8 @@ model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 genai.configure(api_key=gemini_api_key)
 chat_model = genai.GenerativeModel('gemini-1.5-pro')
 
+
+# --- Utility Functions ---
 def get_user_index(user_id):
     index_name = f"neurallens-{user_id.lower()}"
     if index_name not in pc.list_indexes().names():
@@ -26,6 +28,7 @@ def get_user_index(user_id):
         )
     return pc.Index(index_name)
 
+
 def store_text(user_id, text, doc_id):
     try:
         index = get_user_index(user_id)
@@ -34,7 +37,8 @@ def store_text(user_id, text, doc_id):
             embedding = model.encode(chunk).tolist()
             index.upsert(vectors=[(f"{doc_id}-{i}", embedding, {"text": chunk, "doc_id": doc_id})])
     except Exception as e:
-        print(f"Error storing document: {e}")
+        st.error(f"Error storing document: {e}")
+
 
 def generate_summary(user_id, keyword):
     try:
@@ -48,15 +52,19 @@ def generate_summary(user_id, keyword):
             if doc_id not in doc_chunks:
                 doc_chunks[doc_id] = []
             doc_chunks[doc_id].append(text)
+
         if not doc_chunks:
             return "No relevant documents found for the keyword."
+
         complete_docs = ["\n".join(chunks) for chunks in doc_chunks.values()]
         combined_text = "\n".join(complete_docs)
+
         summary_prompt = f"Summarize the following content related to '{keyword}':\n\n{combined_text}"
         summary_response = chat_model.generate_content(summary_prompt)
         return summary_response.text.strip()
     except Exception as e:
         return f"Error generating summary: {e}"
+
 
 def search_documents(user_id, query):
     try:
@@ -70,12 +78,15 @@ def search_documents(user_id, query):
             if results and results['matches']:
                 document_text = results['matches'][0]['metadata']['text']
                 gemini_response = chat_model.generate_content([
-                    f"Context: {document_text}\n\nQuestion: {query}\n\nPlease provide a detailed and complete response to the question in full sentences. If the information is not available, respond with 'Information not available in the given files':\n\nAnswer:"
+                    f"Context: {document_text}\n\nQuestion: {query}\n\n"
+                    f"Please provide a detailed and complete response. "
+                    f"If not available, say: 'Information not available in the given files'\n\nAnswer:"
                 ])
                 return gemini_response.text.strip()
             return "No matching document found"
     except Exception as e:
         return f"Error searching document: {e}"
+
 
 def extract_title(text):
     try:
@@ -85,62 +96,53 @@ def extract_title(text):
     except Exception as e:
         return f"Error extracting title: {e}"
 
-@app.route('/')
-def home():
-    return "NeuroDoc AI is running!"
 
-@app.route('/store', methods=['POST'])
-def store():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    text = data.get('text')
-    if not user_id or not text:
-        return jsonify({"error": "User ID and text are required"}), 400
-    doc_id = str(uuid.uuid4())
-    store_text(user_id, text, doc_id)
-    return jsonify({"message": "Document stored successfully!", "doc_id": doc_id})
+# --- Streamlit UI ---
+st.set_page_config(page_title="NeuroDoc AI", layout="wide")
+st.title("NeuroDoc AI")
 
-@app.route('/search', methods=['POST'])
-def search():
-    data = request.json
-    user_id = data.get('user_id')
-    query = data.get('query')
-    if not user_id or not query:
-        return jsonify({"error": "User ID and query are required"}), 400
-    answer = search_documents(user_id, query)
-    return jsonify({"answer": answer})
+menu = st.sidebar.radio("Choose Action", ["Store Document", "Search", "Summary", "Extract Title"])
 
-@app.route('/summary', methods=['POST'])
-def summary():
-    data = request.get_json()
-    user_id = data.get('user_id')
-    keyword = data.get('keyword')
-    if not user_id or not keyword:
-        return jsonify({"error": "User ID and keyword are required"}), 400
-    summary_text = generate_summary(user_id, keyword)
-    return jsonify({"summary": summary_text})
+if menu == "Store Document":
+    st.header("Store a Document")
+    user_id = st.text_input("Enter your User ID:")
+    text = st.text_area("Paste your document here:")
+    if st.button("Store Document"):
+        if user_id and text:
+            doc_id = str(uuid.uuid4())
+            store_text(user_id, text, doc_id)
+            st.success(f"Document stored successfully! (ID: {doc_id})")
+        else:
+            st.error("User ID and document text are required.")
 
-@app.route('/title', methods=['POST'])
-def title():
-    data = request.get_json()
-    text = data.get('text')
-    if not text:
-        return jsonify({"error": "Text is required"}), 400
-    title = extract_title(text)
-    return jsonify({"title": title})
+elif menu == "Search":
+    st.header("Search Documents")
+    user_id = st.text_input("Enter your User ID:")
+    query = st.text_input("Enter your query:")
+    if st.button("Search"):
+        if user_id and query:
+            answer = search_documents(user_id, query)
+            st.info(answer)
+        else:
+            st.error("User ID and query are required.")
 
-@app.route('/get/<user_id>/<doc_id>', methods=['GET'])
-def get_document(user_id, doc_id):
-    try:
-        index = get_user_index(user_id)
-        result = index.query(id=doc_id, top_k=1, include_values=True)
-        if result and result['matches']:
-            return jsonify({"doc_id": doc_id, "embedding": result['matches'][0]['values']})
-        return jsonify({"error": "Document not found"}), 404
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+elif menu == "Summary":
+    st.header("Generate Summary")
+    user_id = st.text_input("Enter your User ID:")
+    keyword = st.text_input("Enter a keyword/topic:")
+    if st.button("Generate Summary"):
+        if user_id and keyword:
+            summary_text = generate_summary(user_id, keyword)
+            st.success(summary_text)
+        else:
+            st.error("User ID and keyword are required.")
 
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
-
+elif menu == "Extract Title":
+    st.header("Extract Title")
+    text = st.text_area("Paste text here:")
+    if st.button("Extract Title"):
+        if text:
+            title = extract_title(text)
+            st.success(f"Suggested Title: {title}")
+        else:
+            st.error("Text is required.")
